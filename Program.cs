@@ -2,13 +2,16 @@
 //
 // Dies ist ein simpler Client für einen WebService Aufruf.
 
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using System.Net;
 using System.Text.Json;
 
 class Program
 {
     static async Task Main(string[] args)
     {
-        const string url = "https://randomuser.me/api/?nat=de&inc=gender,name,nat,location&noinfo";
+        const string url = "https://randomuser.me/api/?nat=de&inc=gender,name,nat,location,picture&noinfo";
 
         Response data = new Response();
 
@@ -36,7 +39,14 @@ class Program
             }
 
             Console.WriteLine();
-            Console.WriteLine(data.Results[0].ToString());
+
+            Result result = data.Results[0];
+            Console.WriteLine(result.ToString());
+
+            string imageFile = await LoadPicture(result.Picture.Large);
+            ProcessStartInfo startInfo = new ProcessStartInfo(imageFile);
+            startInfo.UseShellExecute = true;
+            Process.Start(startInfo);
 
             Console.WriteLine("\nPress any key to repreat or X to exit...");
             ConsoleKeyInfo key = Console.ReadKey(true);
@@ -68,6 +78,33 @@ class Program
         }
     }
 
+    static async Task<string> LoadPicture(string imageUrl)
+    {
+        string fileName = Path.Combine(Path.GetTempPath(), $"{Path.GetRandomFileName()}.jpg");
+
+        try
+        {
+            using (var client = new HttpClient())
+            {
+                var imageData = await client.GetByteArrayAsync(imageUrl);
+                using (var fs = new FileStream(fileName, FileMode.Create))
+                {
+                    await fs.WriteAsync(imageData, 0, imageData.Length);
+                }
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            Console.WriteLine($"Error downloading image: {ex.Message}");
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine($"Error writing file: {ex.Message}");
+        }
+
+        return fileName;
+    }
+
     public class Response
     {
         public Result[] Results { get; set; } = new Result[0];
@@ -79,12 +116,15 @@ class Program
         public Name Name { get; set; } = new Name();
         public string Nat { get; set; } = string.Empty;
         public Location Location { get; set; } = new Location();
+        public Picture Picture { get; set; } = new Picture();
 
         public override string ToString()
         {
             return $"""
-                    Name       : {Name} ({Gender}, {Nat})
-                    {Location}
+                    Name       : {this.Name} ({this.Gender}, {this.Nat})
+                    {this.Location}
+
+                    {this.Picture}
                     """;
         }
     }
@@ -97,7 +137,7 @@ class Program
 
         public override string ToString()
         {
-            return $"{Title} {First} {Last}";
+            return $"{this.Title} {this.First} {this.Last}";
         }
     }
 
@@ -110,13 +150,14 @@ class Program
         public Street Street { get; set; } = new Street();
         public Coordinates Coordinates { get; set; } = new Coordinates();
         public Timezone Timezone { get; set; } = new Timezone();
+        
 
         public override string ToString()
         {
             return $"""
-                    Address    : {Street}, {Postcode} {City}, {State}, {Country}
-                    Coordinates: {Coordinates}
-                    Timezone   : {Timezone}
+                    Address    : {this.Street}, {this.Postcode} {this.City}, {this.State}, {this.Country}
+                    Coordinates: {this.Coordinates}
+                    Timezone   : {this.Timezone}
                     """;
         }
     }
@@ -151,6 +192,22 @@ class Program
         public override string ToString()
         {
             return $"{this.Description} (GMT{this.Offset})";
+        }
+    }
+
+    public class Picture
+    {
+        public string Large { get; set; } = string.Empty; 
+        public string Medium { get; set; } = string.Empty; 
+        public string Thumbnail { get; set; } = string.Empty;
+
+        public override string ToString()
+        {
+            return $"""
+                    Large      : {this.Large}
+                    Medium     : {this.Medium}
+                    Thumbnail  : {this.Thumbnail}
+                    """;
         }
     }
 }
