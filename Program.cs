@@ -1,9 +1,12 @@
 ﻿// puvsHttpClient
 //
-// Dies ist ein simpler Client für einen WebService Aufruf.
+// Dies ist ein Client für einen WebService Aufruf.
 
+using Polly;
+using Polly.CircuitBreaker;
+using Polly.Retry;
+using Polly.Timeout;
 using System.Diagnostics;
-using System.Diagnostics.Metrics;
 using System.Net;
 using System.Text.Json;
 
@@ -51,7 +54,7 @@ class Program
             Console.WriteLine("\nPress any key to repreat or X to exit...");
             ConsoleKeyInfo key = Console.ReadKey(true);
 
-            if(key.Key == ConsoleKey.X)
+            if (key.Key == ConsoleKey.X)
             {
                 exit = true;
             }
@@ -63,19 +66,69 @@ class Program
 
     static async Task<Response> GetDataFromWebService(string url)
     {
-        using var client = new HttpClient();
-        var response = await client.GetAsync(url);
+        Response response = new Response();
 
-        if (response.IsSuccessStatusCode)
+        using var client = new HttpClient();
+
+        HttpResponseMessage httpResponse = new HttpResponseMessage(HttpStatusCode.BadRequest);
+
+        AsyncCircuitBreakerPolicy circuitBreakerPolicy = Policy
+            .Handle<HttpRequestException>()
+            .Or<TimeoutRejectedException>()
+            .CircuitBreakerAsync(3, TimeSpan.FromSeconds(30));
+
+        AsyncRetryPolicy retryPolicy = Policy
+            .Handle<HttpRequestException>()
+            .Or<TimeoutRejectedException>()
+            .WaitAndRetryAsync(new[]
+            {
+                TimeSpan.FromSeconds(1),
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromSeconds(8),
+                TimeSpan.FromSeconds(16)
+            }, (exception, timeSpan, retryCount, context) =>
+            {
+                Console.WriteLine($"Retry attempt {retryCount} failed. Waiting {timeSpan} before retrying...");
+            });
+
+        AsyncRetryPolicy retryPolicy2 = Policy
+            .Handle<HttpRequestException>()
+            .Or<TimeoutRejectedException>()
+            .WaitAndRetryAsync(
+                5, // number of retries
+                retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), // calculate delay based on retry count
+                (exception, timeSpan, retryCount, context) =>
+                {
+                    Console.WriteLine($"Retry attempt {retryCount} failed. Waiting {timeSpan} before retrying...");
+                });
+
+        AsyncTimeoutPolicy timeoutPolicy = Policy.TimeoutAsync(30);
+
+        try
         {
-            string json = await response.Content.ReadAsStringAsync();
+            await circuitBreakerPolicy.WrapAsync(timeoutPolicy.WrapAsync(retryPolicy)).ExecuteAsync(async () =>
+            {
+                httpResponse = await client.GetAsync(url);
+            });
+        }
+        catch (BrokenCircuitException ex)
+        {
+            Console.WriteLine($"There was a persistent Error downloading data. Requests are not being executed. ({ex.Message})");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Unknown Error downloading data: {ex.Message}");
+        }
+
+        if (httpResponse.IsSuccessStatusCode)
+        {
+            string json = await httpResponse.Content.ReadAsStringAsync();
             var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            return JsonSerializer.Deserialize<Response>(json, options) ?? new Response();
+            response = JsonSerializer.Deserialize<Response>(json, options) ?? new Response();
         }
-        else
-        {
-            throw new HttpRequestException($"HTTP Error: {response.StatusCode}");
-        }
+
+        return response;
     }
 
     static async Task<string> LoadPicture(string imageUrl)
@@ -150,7 +203,7 @@ class Program
         public Street Street { get; set; } = new Street();
         public Coordinates Coordinates { get; set; } = new Coordinates();
         public Timezone Timezone { get; set; } = new Timezone();
-        
+
 
         public override string ToString()
         {
@@ -197,8 +250,8 @@ class Program
 
     public class Picture
     {
-        public string Large { get; set; } = string.Empty; 
-        public string Medium { get; set; } = string.Empty; 
+        public string Large { get; set; } = string.Empty;
+        public string Medium { get; set; } = string.Empty;
         public string Thumbnail { get; set; } = string.Empty;
 
         public override string ToString()
